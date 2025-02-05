@@ -21,3 +21,5 @@ if [ "$(id -u)" = 0 ]; then
 else
   echo "$@" >"${CONSOLE_IN_NAMED_PIPE:-/tmp/minecraft-console-in}"
 fi
+
+
