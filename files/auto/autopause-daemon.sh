@@ -10,9 +10,7 @@ fi
 
 autopause_error_loop() {
   logAutopause "Available interfaces within the docker container:"
-  INTERFACES=$(echo /sys/class/net/*)
-  INTERFACES=${INTERFACES//\/sys\/class\/net\//}
-  logAutopause "  $INTERFACES"
+  logAutopause "  $(mc-image-helper network-interfaces)"
   logAutopause "Please set the environment variable AUTOPAUSE_KNOCK_INTERFACE to the interface that handles incoming connections."
   logAutopause "If unsure which interface to choose, run the ifconfig command in the container."
   logAutopause "Autopause failed to initialize. This log entry will be printed every 30 minutes."
@@ -37,7 +35,7 @@ if [[ -z "$AUTOPAUSE_KNOCK_INTERFACE" ]] ; then
   logAutopause "AUTOPAUSE_KNOCK_INTERFACE variable must not be empty!"
   autopause_error_loop
 fi
-if ! [[ -d "/sys/class/net/$AUTOPAUSE_KNOCK_INTERFACE" ]] ; then
+if ! mc-image-helper network-interfaces --check="$AUTOPAUSE_KNOCK_INTERFACE" ; then
   logAutopause "Selected interface \"$AUTOPAUSE_KNOCK_INTERFACE\" does not exist!"
   autopause_error_loop
 fi
@@ -47,7 +45,12 @@ if isTrue "${DEBUG_AUTOPAUSE}"; then
   knockdArgs+=(-D)
 fi
 
-sudo /usr/sbin/knockd "${knockdArgs[@]}"
+if isTrue "${SKIP_SUDO}"; then
+  /usr/local/sbin/knockd "${knockdArgs[@]}"
+else
+  sudo /usr/local/sbin/knockd "${knockdArgs[@]}"
+fi
+
 if [ $? -ne 0 ] ; then
   logAutopause "Failed to start knockd daemon."
   logAutopause "Probable cause: Unable to attach to interface \"$AUTOPAUSE_KNOCK_INTERFACE\"."
@@ -64,7 +67,13 @@ do
     # Server startup
     if mc_server_listening ; then
       TIME_THRESH=$(($(current_uptime)+$AUTOPAUSE_TIMEOUT_INIT))
-      logAutopause "MC Server listening for connections - pausing in $AUTOPAUSE_TIMEOUT_INIT seconds"
+
+      if [ -e /data/.skip-pause ] ; then
+        logAutopause "'/data/.skip-pause' file is present - skipping pausing"
+      else
+        logAutopause "MC Server listening for connections - pausing in $AUTOPAUSE_TIMEOUT_INIT seconds"
+      fi
+
       STATE=K
     fi
     ;;
@@ -72,6 +81,9 @@ do
     # Knocked
     if java_clients_connected ; then
       logAutopause "Client connected - waiting for disconnect"
+      STATE=E
+    elif [ -e /data/.skip-pause ] ; then
+      logAutopause "'/data/.skip-pause' file is present - skipping pausing"
       STATE=E
     else
       if [[ $(current_uptime) -ge $TIME_THRESH ]] ; then
@@ -94,6 +106,10 @@ do
     if java_clients_connected ; then
       logAutopause "Client reconnected - waiting for disconnect"
       STATE=E
+    elif [ -e /data/.skip-pause ] ; then
+      TIME_THRESH=$(($(current_uptime)+$AUTOPAUSE_TIMEOUT_EST))
+      logAutopause "'/data/.skip-pause' file is present - skipping pausing"
+      STATE=E
     else
       if [[ $(current_uptime) -ge $TIME_THRESH ]] ; then
         logAutopause "No client reconnected - pausing"
@@ -113,11 +129,7 @@ do
         STATE=E
       else
         TIME_THRESH=$(($(current_uptime)+$AUTOPAUSE_TIMEOUT_KN))
-        from=unknown
-        if [ -e /var/log/knocked-source ]; then
-          from=$(cat /var/log/knocked-source)
-        fi
-        logAutopause "Server was knocked from $from - waiting for clients or timeout"
+        logAutopause "Server was knocked - waiting for clients or timeout"
         STATE=K
       fi
     fi
